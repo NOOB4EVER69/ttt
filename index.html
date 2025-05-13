@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>QRCast - File Transfer</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jsQR/1.4.0/jsQR.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/crypto-js/4.1.1/crypto-js.min.js"></script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 20px;
+            text-align: center;
+            background-color: #f0f0f0;
+        }
+
+        #video,
+        #canvas {
+            display: none;
+            margin: 20px auto;
+        }
+
+        #progress {
+            width: 80%;
+            margin: 20px auto;
+        }
+
+        button {
+            padding: 10px 20px;
+            margin: 10px;
+            background-color: #007bff;
+            color: white;
+            border: none;
+            cursor: pointer;
+        }
+
+        button:hover {
+            background-color: #0056b3;
+        }
+
+        #status {
+            margin: 20px;
+            font-weight: bold;
+        }
+    </style>
+</head>
+
+<body>
+    <h1>QRCast - File Transfer</h1>
+    <p>Scan QR codes to receive a file.</p>
+
+    <video id="video" width="300" height="300" autoplay></video>
+    <canvas id="canvas" width="300" height="300"></canvas>
+    <progress id="progress" value="0" max="100"></progress>
+    <div id="status">Waiting to start scanning...</div>
+
+    <button id="startScan" onclick="startScanning()">Start Scanning</button>
+    <button id="save" onclick="saveFile()" style="display: none;">Save File</button>
+
+    <script>
+        let video = document.getElementById("video");
+        let canvas = document.getElementById("canvas");
+        let ctx = canvas.getContext("2d");
+        let progress = document.getElementById("progress");
+        let status = document.getElementById("status");
+        let chunks = [];
+        let totalChunks = 0;
+        let metadata = null;
+        let scanning = false;
+
+        async function startScanning() {
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } });
+                video.srcObject = stream;
+                video.play();
+                canvas.style.display = "block";
+                video.style.display = "block";
+                document.getElementById("startScan").style.display = "none";
+                scanning = true;
+                scanQR();
+            } catch (err) {
+                status.textContent = "Error accessing camera: " + err;
+            }
+        }
+
+        function scanQR() {
+            if (!scanning) return;
+            ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+            const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+            const code = jsQR(imageData.data, imageData.width, imageData.height);
+            if (code) {
+                processQR(code.data);
+            }
+            requestAnimationFrame(scanQR);
+        }
+
+        function processQR(data) {
+            try {
+                const parsed = JSON.parse(data);
+                if (parsed.type === "metadata") {
+                    metadata = parsed;
+                    totalChunks = parsed.totalChunks;
+                    status.textContent = `Metadata received. Expecting ${totalChunks} chunks.`;
+                } else if (parsed.type === "chunk") {
+                    chunks.push(parsed.data);
+                    const progressPercent = (chunks.length / totalChunks) * 100;
+                    progress.value = progressPercent;
+                    status.textContent = `Received chunk ${chunks.length}/${totalChunks} (${progressPercent.toFixed(1)}%)`;
+                    if (chunks.length === totalChunks) {
+                        stopScanning();
+                    }
+                } else if (parsed.type === "end") {
+                    stopScanning();
+                }
+            } catch (e) {
+                console.error("Invalid QR data:", e);
+            }
+        }
+
+        function stopScanning() {
+            scanning = false;
+            video.srcObject.getTracks().forEach(track => track.stop());
+            video.style.display = "none";
+            canvas.style.display = "none";
+            document.getElementById("save").style.display = "block";
+            status.textContent = "Scanning complete. Click to save file.";
+        }
+
+        function saveFile() {
+            try {
+                // Combine chunks
+                const base64Data = chunks.join("");
+                const fileData = atob(base64Data);
+
+                // Verify checksum
+                const calculatedChecksum = CryptoJS.SHA256(fileData).toString();
+                if (calculatedChecksum !== metadata.checksum) {
+                    status.textContent = "Checksum verification failed. File may be corrupted.";
+                    return;
+                }
+
+                // Convert to blob and save
+                const byteCharacters = fileData;
+                const byteNumbers = new Array(byteCharacters.length);
+                for (let i = 0; i < byteCharacters.length; i++) {
+                    byteNumbers[i] = byteCharacters.charCodeAt(i);
+                }
+                const byteArray = new Uint8Array(byteNumbers);
+                const blob = new Blob([byteArray], { type: metadata.fileType });
+                const link = document.createElement("a");
+                link.href = URL.createObjectURL(blob);
+                link.download = metadata.fileName;
+                link.click();
+
+                status.textContent = "File saved successfully!";
+            } catch (e) {
+                status.textContent = "Failed to save file: " + e.message;
+            }
+        }
+    </script>
+</body>
+
+</html>
