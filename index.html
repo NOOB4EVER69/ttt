@@ -1,6 +1,5 @@
 <!DOCTYPE html>
 <html lang="en">
-
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -14,18 +13,35 @@
             text-align: center;
             background-color: #f0f0f0;
         }
-
-        #video,
+        #videoContainer {
+            position: relative;
+            margin: 20px auto;
+            width: 300px;
+            height: 300px;
+        }
+        #video {
+            width: 300px;
+            height: 300px;
+            display: none;
+        }
         #canvas {
             display: none;
-            margin: 20px auto;
         }
-
+        #scanOverlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 300px;
+            height: 300px;
+            border: 2px solid #ff0000;
+            box-sizing: border-box;
+            display: none;
+            pointer-events: none;
+        }
         #progress {
             width: 80%;
             margin: 20px auto;
         }
-
         button {
             padding: 10px 20px;
             margin: 10px;
@@ -34,23 +50,23 @@
             border: none;
             cursor: pointer;
         }
-
         button:hover {
             background-color: #0056b3;
         }
-
         #status {
             margin: 20px;
             font-weight: bold;
         }
     </style>
 </head>
-
 <body>
     <h1>QRCast - File Transfer</h1>
-    <p>Scan QR codes to receive a file.</p>
+    <p>Scan QR codes to receive a file. Align the QR code within the red border.</p>
 
-    <video id="video" width="300" height="300" autoplay></video>
+    <div id="videoContainer">
+        <video id="video" width="300" height="300" autoplay playsinline></video>
+        <div id="scanOverlay"></div>
+    </div>
     <canvas id="canvas" width="300" height="300"></canvas>
     <progress id="progress" value="0" max="100"></progress>
     <div id="status">Waiting to start scanning...</div>
@@ -64,6 +80,7 @@
         let ctx = canvas.getContext("2d");
         let progress = document.getElementById("progress");
         let status = document.getElementById("status");
+        let scanOverlay = document.getElementById("scanOverlay");
         let chunks = [];
         let totalChunks = 0;
         let metadata = null;
@@ -71,33 +88,62 @@
 
         async function startScanning() {
             try {
-                const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } });
+                const stream = await navigator.mediaDevices.getUserMedia({
+                    video: { facingMode: "environment", width: 300, height: 300 }
+                });
                 video.srcObject = stream;
                 video.play();
-                canvas.style.display = "block";
                 video.style.display = "block";
+                scanOverlay.style.display = "block";
                 document.getElementById("startScan").style.display = "none";
                 scanning = true;
+                status.textContent = "Scanning for QR codes...";
+                console.log("Camera started, beginning scan loop");
                 scanQR();
             } catch (err) {
                 status.textContent = "Error accessing camera: " + err;
+                console.error("Camera access error:", err);
             }
         }
 
         function scanQR() {
-            if (!scanning) return;
-            ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-            const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-            const code = jsQR(imageData.data, imageData.width, imageData.height);
-            if (code) {
-                processQR(code.data);
+            if (!scanning) {
+                console.log("Scanning stopped");
+                return;
             }
+
+            try {
+                // Ensure video is ready
+                if (video.readyState === video.HAVE_ENOUGH_DATA) {
+                    canvas.width = video.videoWidth;
+                    canvas.height = video.videoHeight;
+                    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+                    const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+                    const code = jsQR(imageData.data, imageData.width, imageData.height, {
+                        inversionAttempts: "dontInvert"
+                    });
+
+                    if (code) {
+                        console.log("QR code detected:", code.data);
+                        processQR(code.data);
+                    } else {
+                        console.log("No QR code detected in frame");
+                    }
+                } else {
+                    console.log("Video not ready, state:", video.readyState);
+                }
+            } catch (e) {
+                console.error("Error in scanQR:", e);
+                status.textContent = "Scanning error: " + e.message;
+            }
+
             requestAnimationFrame(scanQR);
         }
 
         function processQR(data) {
             try {
                 const parsed = JSON.parse(data);
+                console.log("Parsed QR data:", parsed);
                 if (parsed.type === "metadata") {
                     metadata = parsed;
                     totalChunks = parsed.totalChunks;
@@ -115,6 +161,7 @@
                 }
             } catch (e) {
                 console.error("Invalid QR data:", e);
+                status.textContent = "Error processing QR code: " + e.message;
             }
         }
 
@@ -122,9 +169,10 @@
             scanning = false;
             video.srcObject.getTracks().forEach(track => track.stop());
             video.style.display = "none";
-            canvas.style.display = "none";
+            scanOverlay.style.display = "none";
             document.getElementById("save").style.display = "block";
             status.textContent = "Scanning complete. Click to save file.";
+            console.log("Scanning stopped, chunks received:", chunks.length);
         }
 
         function saveFile() {
@@ -137,6 +185,7 @@
                 const calculatedChecksum = CryptoJS.SHA256(fileData).toString();
                 if (calculatedChecksum !== metadata.checksum) {
                     status.textContent = "Checksum verification failed. File may be corrupted.";
+                    console.error("Checksum mismatch. Expected:", metadata.checksum, "Got:", calculatedChecksum);
                     return;
                 }
 
@@ -154,11 +203,12 @@
                 link.click();
 
                 status.textContent = "File saved successfully!";
+                console.log("File saved:", metadata.fileName);
             } catch (e) {
                 status.textContent = "Failed to save file: " + e.message;
+                console.error("Save file error:", e);
             }
         }
     </script>
 </body>
-
 </html>
